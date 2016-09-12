@@ -1,8 +1,14 @@
 // License: Apache 2.0. See LICENSE file in root directory.
 // Copyright(c) 2015 Intel Corporation. All Rights Reserved.
 
+#undef CHRONO
+#define GLFW
+#define OPENCV
 
+#ifdef CHRONO
 #include <chrono>
+#endif 
+
 #include <vector>
 #include <sstream>
 #include <iostream>
@@ -11,8 +17,9 @@
 
 #include <librealsense/rs.hpp>
 #include "example.hpp"
-
+#ifdef OPENCV
 #include <opencv2\opencv.hpp>
+#endif
 
 inline void glVertex(const rs::float3 & vertex) { glVertex3fv(&vertex.x); }
 inline void glTexCoord(const rs::float2 & tex_coord) { glTexCoord2fv(&tex_coord.x); }
@@ -33,9 +40,11 @@ struct state {
 static rs::context ctx;
 static state app_state;
 static int frames = 0;
-static float nexttime = 0, fps = 0;
 
+#ifdef CHRONO
+static float nexttime = 0, fps = 0;
 static std::chrono::steady_clock::time_point t0;
+#endif
 
 state *initialize_app_state()
 {
@@ -53,7 +62,10 @@ state *initialize_app_state()
 			dev.get_extrinsics(rs::stream::depth, rs::stream::color), dev.get_stream_intrinsics(rs::stream::depth),
 			dev.get_stream_intrinsics(rs::stream::depth), 0, 0, &dev };
 		app_state = initState;
+
+#ifdef CHRONO
 		auto t0 = std::chrono::high_resolution_clock::now();
+#endif
 		return &app_state;
 	}
 	return 0;
@@ -62,8 +74,11 @@ state *initialize_app_state()
 bool app_next_frame(int &xInOut, int &yInOut, int &zInOut)
 {
 	rs::device & dev = *app_state.dev;
-	if (dev.is_streaming()) dev.wait_for_frames();
 
+	if (dev.is_streaming())
+		dev.wait_for_frames();
+
+#ifdef CHRONO
 	auto t1 = std::chrono::high_resolution_clock::now();
 	nexttime += std::chrono::duration<float>(t1 - t0).count();
 	t0 = t1;
@@ -74,6 +89,7 @@ bool app_next_frame(int &xInOut, int &yInOut, int &zInOut)
 		frames = 0;
 		nexttime = 0;
 	}
+#endif
 
 	const rs::stream tex_stream = app_state.tex_streams[app_state.index];
 	app_state.depth_scale = dev.get_depth_scale();
@@ -82,6 +98,7 @@ bool app_next_frame(int &xInOut, int &yInOut, int &zInOut)
 	app_state.tex_intrin = dev.get_stream_intrinsics(tex_stream);
 	app_state.identical = app_state.depth_intrin == app_state.tex_intrin && app_state.extrin.is_identity();
 
+#ifdef OPENCV
 	// setup the OpenCV Mat structures
 	cv::Mat depth16(app_state.depth_intrin.height, app_state.depth_intrin.width, CV_16U, (uchar *)dev.get_frame_data(rs::stream::depth));
 
@@ -116,13 +133,19 @@ bool app_next_frame(int &xInOut, int &yInOut, int &zInOut)
 
 	if (handPoint != cv::Point(0, 0))
 		cv::circle(depth8u, handPoint, 10, 172, cv::FILLED);
+
 	imshow("depth8u", depth8u);
+
 	cv::cvtColor(rgb, rgb, cv::COLOR_BGR2RGB);
 	imshow("rgb", rgb);
+
 	xInOut = handPoint.x;
 	yInOut = handPoint.y;
 	zInOut = 0; // not using this yet.
-	if (handPoint == cv::Point(0, 0)) return false;
+	if (handPoint == cv::Point(0, 0))
+		return false;
+#endif
+
 	return true;
 }
 
@@ -139,6 +162,7 @@ int main(int argc, char * argv[]) try
 	}
 	rs::device & dev = *app_state->dev;
 
+#ifdef GLFW
 	glfwInit();
 	std::ostringstream ss; ss << "CPP Point Cloud Example (" << dev.get_name() << ")";
 	GLFWwindow * win = glfwCreateWindow(640, 480, ss.str().c_str(), 0, 0);
@@ -194,9 +218,10 @@ int main(int argc, char * argv[]) try
 		glfwPollEvents();
 
 		// wait for the next frames.
-		cv::Point handPoint(0, 0);
-		int z = 0;
-		bool handPresent = app_next_frame(handPoint.x, handPoint.y, z);
+		//cv::Point handPoint(0, 0);
+		// int z = 0;
+		static int x, y, z;
+		bool handPresent = app_next_frame(x, y, z);
 
 		glPushAttrib(GL_ALL_ATTRIB_BITS);
 
@@ -269,6 +294,14 @@ int main(int argc, char * argv[]) try
 	glfwTerminate();
 
 	return EXIT_SUCCESS;
+#else
+	while (true) {
+		// wait for the next frames.
+		cv::Point handPoint(0, 0);
+		int z = 0;
+		bool handPresent = app_next_frame(handPoint.x, handPoint.y, z);
+	}
+#endif
 }
 catch (const rs::error & e)
 {
