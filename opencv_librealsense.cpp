@@ -1,7 +1,7 @@
 // License: Apache 2.0. See LICENSE file in root directory.
 // Copyright(c) 2015 Intel Corporation. All Rights Reserved.
 
-#undef CHRONO
+#define CHRONO
 #define GLFW
 #define OPENCV
 
@@ -13,12 +13,11 @@
 #include <sstream>
 #include <iostream>
 #include <algorithm>
-#include <chrono>
 
 #include <librealsense/rs.hpp>
 #include "example.hpp"
 #ifdef OPENCV
-#include <opencv2\opencv.hpp>
+#include <opencv2/opencv.hpp>
 #endif
 
 inline void glVertex(const rs::float3 & vertex) { glVertex3fv(&vertex.x); }
@@ -106,10 +105,13 @@ bool app_next_frame(int &xInOut, int &yInOut, int &zInOut)
 	cv::Mat rgb(color_intrin.height, color_intrin.width, CV_8UC3, (uchar *)dev.get_frame_data(rs::stream::color));
 
 	// ignore depth greater than 800 mm's.
-	depth16.setTo(10000, depth16 > 1000);
+	depth16.setTo(10000, depth16 > 800);
 	depth16.setTo(10000, depth16 == 0);
-	cv::Mat depth8u = depth16 < 1000;
+	cv::Mat depth8u = depth16 < 800;
 
+	depth8u.convertTo(depth8u, CV_8UC1, 255.0/800);
+
+#if false
 	cv::Point handPoint(0, 0);
 	for (int y = 0; y < depth8u.rows; ++y)
 	{
@@ -133,17 +135,20 @@ bool app_next_frame(int &xInOut, int &yInOut, int &zInOut)
 
 	if (handPoint != cv::Point(0, 0))
 		cv::circle(depth8u, handPoint, 10, 172, cv::FILLED);
+#endif
 
 	imshow("depth8u", depth8u);
+	cvWaitKey(1);
 
 	cv::cvtColor(rgb, rgb, cv::COLOR_BGR2RGB);
 	imshow("rgb", rgb);
+	cvWaitKey(1);
 
-	xInOut = handPoint.x;
-	yInOut = handPoint.y;
-	zInOut = 0; // not using this yet.
-	if (handPoint == cv::Point(0, 0))
-		return false;
+// xInOut = handPoint.x;
+// yInOut = handPoint.y;
+// zInOut = 0; // not using this yet.
+// if (handPoint == cv::Point(0, 0))
+// 	return false;
 #endif
 
 	return true;
@@ -210,9 +215,10 @@ int main(int argc, char * argv[]) try
 
 	glfwMakeContextCurrent(win);
 	texture_buffer tex;
-
+#ifdef CHRONO
 	int frames = 0; float time = 0, fps = 0;
 	auto t0 = std::chrono::high_resolution_clock::now();
+#endif
 	while (!glfwWindowShouldClose(win))
 	{
 		glfwPollEvents();
@@ -283,8 +289,10 @@ int main(int argc, char * argv[]) try
 		std::ostringstream ss; ss << dev.get_name() << " (" << app_state->tex_streams[app_state->index] << ")";
 		draw_text((width - get_text_width(ss.str().c_str())) / 2, height - 20, ss.str().c_str());
 
+#ifdef CHRONO
 		ss.str(""); ss << fps << " FPS";
 		draw_text(20, 40, ss.str().c_str());
+#endif
 		glPopMatrix();
 
 		glfwSwapBuffers(win);
@@ -301,6 +309,8 @@ int main(int argc, char * argv[]) try
 		int z = 0;
 		bool handPresent = app_next_frame(handPoint.x, handPoint.y, z);
 	}
+
+	return EXIT_SUCCESS;
 #endif
 }
 catch (const rs::error & e)
