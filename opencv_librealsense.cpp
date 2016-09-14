@@ -19,6 +19,12 @@ struct state {
 	bool identical;
 	int index;
 	rs::device * dev;
+
+	cv::SimpleBlobDetector::Params params;
+
+	std::vector<cv::KeyPoint> keypoints;
+
+	cv::Ptr<cv::SimpleBlobDetector> detector;
 };
 
 static rs::context ctx;
@@ -40,6 +46,27 @@ state *initialize_app_state()
 		state initState = { 0, 0, 0, 0, false,{ rs::stream::color, rs::stream::depth, rs::stream::infrared }, dev.get_depth_scale(),
 			dev.get_extrinsics(rs::stream::depth, rs::stream::color), dev.get_stream_intrinsics(rs::stream::depth),
 			dev.get_stream_intrinsics(rs::stream::depth), 0, 0, &dev };
+
+		initState.params.minThreshold = 10;
+		initState.params.maxThreshold = 200;
+		// Filter by Area.
+		initState.params.filterByArea = true;
+		initState.params.minArea = 1500;
+
+		// Filter by Circularity
+		initState.params.filterByCircularity = true;
+		initState.params.minCircularity = 0.1f;
+
+		// Filter by Convexity
+		initState.params.filterByConvexity = true;
+		initState.params.minConvexity = 0.87f;
+
+		// Filter by Inertia
+		initState.params.filterByInertia = true;
+		initState.params.minInertiaRatio = 0.01f;
+
+		initState.detector = cv::SimpleBlobDetector::create(initState.params);
+
 		app_state = initState;
 
 		return &app_state;
@@ -69,14 +96,27 @@ bool app_next_frame(int &xInOut, int &yInOut, int &zInOut)
 
 	cv::Mat depth8u = depth16;// < 800;
 
-	depth8u.convertTo(depth8u, CV_8UC1, 255.0/1000);
+	depth8u.convertTo(depth8u, CV_8U, 255.0 / 1000);
 
-	imshow("depth8u", depth8u);
+	cv::Mat imPoints;
+	cv::drawKeypoints(depth8u,
+		app_state.keypoints,
+		imPoints,
+		cv::Scalar(0, 0, 255),
+		cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
+
+	imshow("depth8u", imPoints);
 	cvWaitKey(1);
 
 	cv::cvtColor(rgb, rgb, cv::COLOR_BGR2RGB);
+	app_state.detector->detect(rgb, app_state.keypoints);
+
+
+
 	imshow("rgb", rgb);
 	cvWaitKey(1);
+
+	// app_state.keypoints.clear();
 
 	return true;
 }
