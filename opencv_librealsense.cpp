@@ -1,5 +1,5 @@
 // License: Apache 2.0. See LICENSE file in root directory.
-// Copyright(c) 2016 Intel Corporation. All Rights Reserved.
+// Copyright(c) 2015 Intel Corporation. All Rights Reserved.
 #include <vector>
 #include <sstream>
 #include <iostream>
@@ -8,7 +8,12 @@
 #include <librealsense/rs.hpp>
 #include <opencv2/opencv.hpp>
 
+	int min = 720;
+	int max = 3000;
+
 struct state {
+
+	char key;
 	double yaw, pitch, lastX, lastY;
 	bool ml;
 	std::vector<rs::stream> tex_streams;
@@ -19,11 +24,21 @@ struct state {
 	bool identical;
 	int index;
 	rs::device * dev;
+
+	cv::SimpleBlobDetector::Params params;
+
+	std::vector<cv::KeyPoint> keypoints;
+
+	cv::Ptr<cv::SimpleBlobDetector> detector;
 };
 
 static rs::context ctx;
 static state app_state;
 static int frames = 0;
+
+void cbBrightness(int value, void* usrData) {
+
+}
 
 state *initialize_app_state()
 {
@@ -32,22 +47,69 @@ state *initialize_app_state()
 		static rs::device & dev = *ctx.get_device(0);
 
 		int inputWidth = 320, inputHeight = 240, frameRate = 60;
+		// dev.set_option(rs::option::r200_depth_clamp_max, max);
+		// dev.set_option(rs::option::r200_depth_clamp_min, min);
+		// dev.set_option(rs::option::r200_depth_control_median_threshold, 128);
+
 		dev.enable_stream(rs::stream::color, inputWidth, inputHeight, rs::format::rgb8, frameRate);
 		dev.enable_stream(rs::stream::depth, inputWidth, inputHeight, rs::format::z16, frameRate);
+
+		dev.enable_stream(rs::stream::depth, rs::preset::best_quality);
+
+
+		// rs::apply_ivcam_preset(&dev, 2);
+
 		dev.start();
 
 		// some placeholders were added for intrinsics and extrinsics.
-		state initState = { 0, 0, 0, 0, false,{ rs::stream::color, rs::stream::depth, rs::stream::infrared }, dev.get_depth_scale(),
-			dev.get_extrinsics(rs::stream::depth, rs::stream::color), dev.get_stream_intrinsics(rs::stream::depth),
-			dev.get_stream_intrinsics(rs::stream::depth), 0, 0, &dev };
+#if 1 
+		state initState = { 
+			(char)0, 
+			0, 0, 
+			0, 0, 
+			false,
+			{ rs::stream::color, rs::stream::depth, rs::stream::infrared }, 
+			dev.get_depth_scale(),
+			dev.get_extrinsics(rs::stream::depth, rs::stream::color), 
+			dev.get_stream_intrinsics(rs::stream::depth),
+			dev.get_stream_intrinsics(rs::stream::depth), 
+			0,
+			0,
+			&dev };
+#endif
+		initState.params.minThreshold = 120;
+		initState.params.maxThreshold = 255;
+		// initState.params.thresholdStep = 1;
+		// Filter by Area.
+		initState.params.filterByArea = true;
+		initState.params.minArea = 500;
+
+		// Filter by Circularity
+		initState.params.filterByCircularity = true;
+		initState.params.minCircularity = 0.1f;
+
+		// Filter by Convexity
+		initState.params.filterByConvexity = true;
+		initState.params.minConvexity = 0.5;
+
+		// Filter by Inertia
+		initState.params.filterByInertia = true;
+		initState.params.minInertiaRatio = 0.01f;
+
+		initState.detector = cv::SimpleBlobDetector::create(initState.params);
+
 		app_state = initState;
+
+		cvNamedWindow("depth8u", 2);
+		cvCreateTrackbar("max", "depth8u", &max, max);
+		cvCreateTrackbar("min", "depth8u", &min, max);
 
 		return &app_state;
 	}
 	return 0;
 }
 
-bool app_next_frame(int &xInOut, int &yInOut, int &zInOut)
+bool app_next_frame(void)
 {
 	rs::device & dev = *app_state.dev;
 
@@ -67,16 +129,65 @@ bool app_next_frame(int &xInOut, int &yInOut, int &zInOut)
 	rs::intrinsics color_intrin = dev.get_stream_intrinsics(rs::stream::color);
 	cv::Mat rgb(color_intrin.height, color_intrin.width, CV_8UC3, (uchar *)dev.get_frame_data(rs::stream::color));
 
-	cv::Mat depth8u = depth16;// < 800;
+#if false
+	// ignore depth greater than max mm's.
+	depth16.setTo(10000, depth16 > max);
+	depth16.setTo(10000, depth16 == min);
+	cv::Mat depth8u = depth16 < max;
+#else
+#endif
+	cv::Mat depth8u = depth16;
+	cv::Mat blurred, threshold, threshold2, output;
+	
+	depth8u.convertTo(depth8u, CV_8U, -255.0 / (max - min), 255 * max / (max - min) );
 
-	depth8u.convertTo(depth8u, CV_8UC1, 255.0/1000);
 
-	imshow("depth8u", depth8u);
-	cvWaitKey(1);
+#if 0 
+	app_state.detector->detect(depth8u, app_state.keypoints);
+	cv::Mat imPoints;
+	cv::drawKeypoints(depth8u,
+		app_state.keypoints,
+		imPoints,
+		cv::Scalar(0, 0, 255),
+		cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
 
-	cv::cvtColor(rgb, rgb, cv::COLOR_BGR2RGB);
-	imshow("rgb", rgb);
-	cvWaitKey(1);
+	cv::imshow("depth8u", imPoints);
+#else
+	cv::blur(depth8u, blurred, cv::Size(5, 5));
+	cv::threshold(blurred, threshold, 128.f, 255.f, CV_8U);
+	cv::threshold(blurred, threshold2, 128.f, 255, CV_8U);
+
+	std::vector<std::vector<cv::Point>> contours;
+	cv::findContours(threshold, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE);
+	cv::cvtColor(threshold2, output, CV_GRAY2RGB);
+	// loop the stored contours
+	for (std::vector<std::vector<cv::Point> >::iterator it = contours.begin(); it < contours.end(); it++) {
+
+		// center and radius for current blob
+		cv::Point2f center;
+		float radius;
+		// convert the contour points to a matrix 
+		auto pts = *it;
+		cv::Mat pointsMatrix = cv::Mat(pts);
+		cv::minEnclosingCircle(pointsMatrix, center, radius);
+
+		cv::Scalar color(0, 255, 0);
+		// if the radius is within the specified range
+		if (radius > 20.f && radius < 80.f) {
+			// draw the circle
+			cv::circle(output, center, radius, color);
+
+		}
+	}
+ 	cv::imshow("depth8u", output); 
+#endif
+	app_state.key = cvWaitKey(50);
+
+	cv::imshow("rgb", rgb);
+	app_state.key = cvWaitKey(50);
+
+	app_state.keypoints.clear();
+
 
 	return true;
 }
@@ -94,11 +205,9 @@ int main(int argc, char * argv[]) try
 	}
 	rs::device & dev = *app_state->dev;
 
-	while (true) {
+	while ( true ) {
 		// wait for the next frames.
-		cv::Point handPoint(0, 0);
-		int z = 0;
-		app_next_frame(handPoint.x, handPoint.y, z);
+		app_next_frame();
 	}
 
 	return EXIT_SUCCESS;
