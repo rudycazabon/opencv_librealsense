@@ -1,148 +1,181 @@
+/////////////////////////////////////////////////////////////////////////////
 // License: Apache 2.0. See LICENSE file in root directory.
-// Copyright(c) 2015 Intel Corporation. All Rights Reserved.
-#include <vector>
-#include <sstream>
-#include <iostream>
-#include <algorithm>
+// Copyright(c) 2016 Intel Corporation. All Rights Reserved.
+//
+//
+//
+/////////////////////////////////////////////////////////////////////////////
+// Authors
+// * Rudy Cazabon
+//
+// Dependencies
+// * LibRealSense
+// * OpenCV
+//
+/////////////////////////////////////////////////////////////////////////////
+// This code sample shows how you can use LibRealSense and OpenCV to display
+// both an RGB stream as well as Depth stream into two separate OpenCV
+// created windows.
+//
+/////////////////////////////////////////////////////////////////////////////
 
 #include <librealsense/rs.hpp>
 #include <opencv2/opencv.hpp>
+#include <opencv2/highgui.hpp>
 
-struct state {
-	double yaw, pitch, lastX, lastY;
-	bool ml;
-	std::vector<rs::stream> tex_streams;
-	float depth_scale;
-	rs::extrinsics extrin;
-	rs::intrinsics depth_intrin;
-	rs::intrinsics tex_intrin;
-	bool identical;
-	int index;
-	rs::device * dev;
+using namespace std;
+using namespace rs;
 
-	cv::SimpleBlobDetector::Params params;
 
-	std::vector<cv::KeyPoint> keypoints;
+// Window size and frame rate
+int const INPUT_WIDTH = 320;
+int const INPUT_HEIGHT = 240;
+int const FRAMERATE = 60;
 
-	cv::Ptr<cv::SimpleBlobDetector> detector;
-};
+// Named windows
+char* const WINDOW_DEPTH = "Depth Image";
+char* const WINDOW_RGB = "RGB Image";
 
-static rs::context ctx;
-static state app_state;
-static int frames = 0;
 
-state *initialize_app_state()
+context 	_rs_ctx;
+device* 	_rs_camera = NULL;
+intrinsics 	_depth_intrin;
+intrinsics  _color_intrin;
+bool 		_loop = true;
+
+
+
+// Initialize the application state. Upon success will return the static app_state vars address
+bool initialize_streaming()
 {
-	if (ctx.get_device_count() > 0)
+	bool success = false;
+	if (_rs_ctx.get_device_count() > 0)
 	{
-		static rs::device & dev = *ctx.get_device(0);
+		_rs_camera = _rs_ctx.get_device(0);
 
-		int inputWidth = 320, inputHeight = 240, frameRate = 60;
-		dev.enable_stream(rs::stream::color, inputWidth, inputHeight, rs::format::rgb8, frameRate);
-		dev.enable_stream(rs::stream::depth, inputWidth, inputHeight, rs::format::z16, frameRate);
-		dev.start();
+		_rs_camera->enable_stream(rs::stream::color, INPUT_WIDTH, INPUT_HEIGHT, rs::format::rgb8, FRAMERATE);
+		_rs_camera->enable_stream(rs::stream::depth, INPUT_WIDTH, INPUT_HEIGHT, rs::format::z16, FRAMERATE);
 
-		// some placeholders were added for intrinsics and extrinsics.
-		state initState = { 0, 0, 0, 0, false,{ rs::stream::color, rs::stream::depth, rs::stream::infrared }, dev.get_depth_scale(),
-			dev.get_extrinsics(rs::stream::depth, rs::stream::color), dev.get_stream_intrinsics(rs::stream::depth),
-			dev.get_stream_intrinsics(rs::stream::depth), 0, 0, &dev };
+		_rs_camera->start();
 
-		initState.params.minThreshold = 10;
-		initState.params.maxThreshold = 200;
-		// Filter by Area.
-		initState.params.filterByArea = true;
-		initState.params.minArea = 1500;
-
-		// Filter by Circularity
-		initState.params.filterByCircularity = true;
-		initState.params.minCircularity = 0.1f;
-
-		// Filter by Convexity
-		initState.params.filterByConvexity = true;
-		initState.params.minConvexity = 0.87f;
-
-		// Filter by Inertia
-		initState.params.filterByInertia = true;
-		initState.params.minInertiaRatio = 0.01f;
-
-		initState.detector = cv::SimpleBlobDetector::create(initState.params);
-
-		app_state = initState;
-
-		return &app_state;
+		success = true;
 	}
-	return 0;
+	return success;
 }
 
-bool app_next_frame(int &xInOut, int &yInOut, int &zInOut)
+
+
+/////////////////////////////////////////////////////////////////////////////
+// If the left mouse button was clicked on either image, stop streaming and close windows.
+/////////////////////////////////////////////////////////////////////////////
+static void onMouse(int event, int x, int y, int, void* window_name)
 {
-	rs::device & dev = *app_state.dev;
+	if (event == cv::EVENT_LBUTTONDOWN)
+	{
+		_loop = false;
+	}
+}
 
-	if (dev.is_streaming())
-		dev.wait_for_frames();
 
-	const rs::stream tex_stream = app_state.tex_streams[app_state.index];
-	app_state.depth_scale = dev.get_depth_scale();
-	app_state.extrin = dev.get_extrinsics(rs::stream::depth, tex_stream);
-	app_state.depth_intrin = dev.get_stream_intrinsics(rs::stream::depth);
-	app_state.tex_intrin = dev.get_stream_intrinsics(tex_stream);
-	app_state.identical = app_state.depth_intrin == app_state.tex_intrin && app_state.extrin.is_identity();
 
-	// setup the OpenCV Mat structures
-	cv::Mat depth16(app_state.depth_intrin.height, app_state.depth_intrin.width, CV_16U, (uchar *)dev.get_frame_data(rs::stream::depth));
+/////////////////////////////////////////////////////////////////////////////
+// Create the depth and RGB windows, set their mouse callbacks.
+// Required if we want to create a window and have the ability to use it in
+// different functions
+/////////////////////////////////////////////////////////////////////////////
+void setup_windows()
+{
+	cv::namedWindow(WINDOW_DEPTH, 0);
+	cv::namedWindow(WINDOW_RGB, 0);
 
-	rs::intrinsics color_intrin = dev.get_stream_intrinsics(rs::stream::color);
-	cv::Mat rgb(color_intrin.height, color_intrin.width, CV_8UC3, (uchar *)dev.get_frame_data(rs::stream::color));
+	cv::setMouseCallback(WINDOW_DEPTH, onMouse, WINDOW_DEPTH);
+	cv::setMouseCallback(WINDOW_RGB, onMouse, WINDOW_RGB);
+}
 
-	cv::Mat depth8u = depth16;// < 800;
 
-	depth8u.convertTo(depth8u, CV_8U, 255.0 / 1000);
 
-	cv::Mat imPoints;
-	cv::drawKeypoints(depth8u,
-		app_state.keypoints,
-		imPoints,
-		cv::Scalar(0, 0, 255),
-		cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
+/////////////////////////////////////////////////////////////////////////////
+// Called every frame gets the data from streams and displays them using OpenCV.
+/////////////////////////////////////////////////////////////////////////////
+bool display_next_frame()
+{
+	
+	// Get current frames intrinsic data.
+	_depth_intrin = _rs_camera->get_stream_intrinsics(rs::stream::depth);
+	_color_intrin = _rs_camera->get_stream_intrinsics(rs::stream::color);
 
-	imshow("depth8u", imPoints);
+	// Create depth image
+	cv::Mat depth16(_depth_intrin.height,
+		_depth_intrin.width,
+		CV_16U,
+		(uchar *)_rs_camera->get_frame_data(rs::stream::depth));
+
+	// Create color image
+	cv::Mat rgb(_color_intrin.height,
+		_color_intrin.width,
+		CV_8UC3,
+		(uchar *)_rs_camera->get_frame_data(rs::stream::color));
+
+	cv::Mat depth8u = depth16;
+
+	const int min = 800;
+	const int max = 2000;
+	int height = _depth_intrin.height;
+	int width = _depth_intrin.width;
+	int u = 100;
+	int v = 100;
+	cv::Point2i p1((int)(0.5*(height - u)),(int)(0.5*(width - v))); 
+	cv::Point2i p2((int)(0.5*(height + u)),(int)(0.5*(width + v)));
+
+	depth8u.convertTo(depth8u, CV_8UC1, -255.0 / (max - min), 255.0 * max / (max - min));
+	cv::Mat mask = cv::Mat::zeros(height, width, CV_8UC1);
+	cv::rectangle(mask, 
+		p1, 
+		p2, 
+		cv::Scalar(255, 255, 255), -1, 8);
+	cv::bitwise_and(depth8u, mask, depth8u);
+
+	imshow(WINDOW_DEPTH, depth8u);
 	cvWaitKey(1);
 
 	cv::cvtColor(rgb, rgb, cv::COLOR_BGR2RGB);
-	app_state.detector->detect(rgb, app_state.keypoints);
-
-
-
-	imshow("rgb", rgb);
+	imshow(WINDOW_RGB, rgb);
 	cvWaitKey(1);
-
-	// app_state.keypoints.clear();
 
 	return true;
 }
 
-int main(int argc, char * argv[]) try
+
+
+/////////////////////////////////////////////////////////////////////////////
+// Main function
+/////////////////////////////////////////////////////////////////////////////
+int main() try
 {
 	rs::log_to_console(rs::log_severity::warn);
 
-	state *app_state = initialize_app_state();
-	if (app_state == 0)
+	if (!initialize_streaming())
 	{
 		std::cout << "Unable to locate a camera" << std::endl;
 		rs::log_to_console(rs::log_severity::fatal);
 		return EXIT_FAILURE;
 	}
-	rs::device & dev = *app_state->dev;
 
-	while (true) {
-		// wait for the next frames.
-		cv::Point handPoint(0, 0);
-		int z = 0;
-		app_next_frame(handPoint.x, handPoint.y, z);
+	setup_windows();
+
+	// Loop until someone left clicks on either of the images in either window.
+	while (_loop)
+	{
+		if (_rs_camera->is_streaming())
+			_rs_camera->wait_for_frames();
+
+		display_next_frame();
 	}
 
-	return EXIT_SUCCESS;
+	_rs_camera->stop();
+	cv::destroyAllWindows();
 
+	return EXIT_SUCCESS;
 }
 catch (const rs::error & e)
 {
